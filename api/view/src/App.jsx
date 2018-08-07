@@ -33,7 +33,7 @@ class App extends Component {
   }
 
   /* Helper  to return the URL query parameters as a comma-separated list. */
-  parseURLParameters(url) {
+  parseURLParameters = url => {
     var ret;
     var splitOnParam = url.split("?");
     if (splitOnParam.length > 1) {
@@ -43,10 +43,10 @@ class App extends Component {
     }
 
     return ret;
-  }
+  };
 
   /* Helper  to return the hostname from a URL string. */
-  parseHost(url) {
+  parseHost = url => {
     var ret;
 
     // In case the url has a protocol, remove it.
@@ -68,10 +68,10 @@ class App extends Component {
     }
 
     return ret;
-  }
+  };
 
   /* Helper  to return the path from a URL string. */
-  parsePath(url) {
+  parsePath = url => {
     var ret = "";
 
     // In case the url has a protocol, remove it.
@@ -92,7 +92,7 @@ class App extends Component {
     }
 
     return ret;
-  }
+  };
 
   // Mesage the request objects into a set of tracer data structure so the
   // table can read their columns.
@@ -137,7 +137,7 @@ class App extends Component {
   };
 
   /* Format all the event contexts into their corresponding columns. */
-  formatEvent(event, eidx) {
+  formatEvent = (event, eidx) => {
     // Enum to human-readable structure to translate the various DOM contexts.
     const locationTypes = {
       0: "attribute name",
@@ -181,16 +181,16 @@ class App extends Component {
     }
 
     return ret;
-  }
+  };
 
   /* Given an event, give it an ID. */
-  enumerate(event, id) {
+  enumerate = (event, id) => {
     event.ID = id + 1;
 
     return event;
-  }
+  };
 
-  formatRowSeverity(row, rowIdx) {
+  formatRowSeverity = (row, rowIdx) => {
     // Enum to human-readable structure to translate the different severity ratings.
     const severity = {
       0: "unexploitable",
@@ -199,7 +199,7 @@ class App extends Component {
       3: "exploitable"
     };
     return severity[row.OverallSeverity];
-  }
+  };
 
   /* getProjects gets the projects available to view. */
   getProjects = () => {
@@ -293,7 +293,7 @@ class App extends Component {
   };
 
   /* Converts raw tracers into tracers that can be read by the table. */
-  parseVisibleTracers(requests = [], sfilters = {}) {
+  parseVisibleTracers = (requests = [], sfilters = {}) => {
     let ret = [];
     if (requests.length > 0) {
       const parsedTracers = [].concat
@@ -311,10 +311,10 @@ class App extends Component {
       }, parsedTracers);
     }
     return ret;
-  }
+  };
 
   /* Converts raw events into events that can be read by the table. */
-  parseVisibleEvents(events = [], sfilters = {}) {
+  parseVisibleEvents = (events = [], sfilters = {}) => {
     let ret = [];
     if (events.length > 0) {
       const parsedEvents = [].concat
@@ -339,7 +339,7 @@ class App extends Component {
       }, parsedEvents);
     }
     return ret;
-  }
+  };
 
   /* Called whenever one of the filter buttons is toggled. */
   handleFilterChange = (evt, filter) => {
@@ -545,7 +545,7 @@ HTML Parent Tag: ${context.HTMLNodeType}`;
 
   /* When the app loads, make an HTTP request for the latest set of tracers and 
    * projects. */
-  componentDidMount() {
+  componentDidMount = () => {
     this.getProjects();
     const proj = this.getSavedProject();
     if (proj !== null) {
@@ -554,7 +554,7 @@ HTML Parent Tag: ${context.HTMLNodeType}`;
       });
       this.switchProject(proj);
     }
-  }
+  };
 
   deleteProject = proj => {
     const req = this.newTracyRequest(`/projects?proj=${proj}`, {
