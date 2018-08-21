@@ -47,7 +47,6 @@ class WebSocketRouter extends Component {
 
           break;
         default:
-          console.log("WebSocket message: ", msg.data);
           break;
       }
     };

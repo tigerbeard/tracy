@@ -70,6 +70,7 @@ class TracerEventsTable extends Component {
               {
                 Header: "observed outputs",
                 columns: [
+                  { Header: "reproduce", width: 5 },
                   { Header: "id", accessor: "ID", width: 30 },
                   { Header: "host", accessor: "EventHost" },
                   { Header: "path", accessor: "EventPath" },
@@ -92,6 +93,18 @@ class TracerEventsTable extends Component {
                 ]
               }
             ]}
+            getTdProps={(state, rowInfo, column) => {
+              return {
+                onClick: (e, handleOriginal) => {
+                  if (column.Header === "reproduce") {
+                    this.props.reproduce();
+                  }
+                  if (handleOriginal) {
+                    handleOriginal();
+                  }
+                }
+              };
+            }}
             getTrProps={(state, rowInfo, column, instance) => {
               if (rowInfo) {
                 let classname = "";

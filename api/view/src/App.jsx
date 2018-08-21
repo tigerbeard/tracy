@@ -102,6 +102,26 @@ class App extends Component {
     }
   };
 
+  reproduce = () => {
+    if (
+      Object.keys(this.state.tracer).length === 0 ||
+      Object.keys(this.state.event).length === 0
+    ) {
+      return;
+    }
+
+    fetch(
+      this.newTracyRequest(
+        `/tracers/${this.state.tracer.ID}/events/${
+          this.state.event.ContextID
+        }/reproductions`,
+        {
+          method: "POST"
+        }
+      )
+    ).catch(err => console.error(err));
+  };
+
   // formatTracer returns a new tracer object with some its fields
   // changed to be read better by the tables.
   formatTracer = (tracer, request) => {
@@ -152,6 +172,7 @@ class App extends Component {
       ret = event.DOMContexts.map(
         function(context, cidx) {
           return {
+            ContextID: context.ID,
             HTMLLocationType: locationTypes[context.HTMLLocationType],
             HTMLNodeType: context.HTMLNodeType,
             EventContext: context.EventContext,
@@ -687,6 +708,7 @@ HTML Parent Tag: ${context.HTMLNodeType}`;
                 tracer={this.state.tracer}
                 loading={this.state.loading}
                 handleEventSelection={this.handleEventSelection}
+                reproduce={this.reproduce}
               />
             </Col>
           </Row>

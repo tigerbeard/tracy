@@ -5,23 +5,58 @@
     chrome.runtime.sendMessage(event.data);
   });
 
-  // A list of scripts we want to inject into the page rather than have them as a
-  // content script.
-  const injectionScripts = ["innerhtml.js"];
-  // Inject the scripts.
-  injectionScripts.map(getInjectionSrc).map(injectScript);
+  function proxyInnerHTML() {
+    // Get a reference to the original innerHTML prototype.
+    const originalSet = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      "innerHTML"
+    ).set;
 
-  /*getInjectionSrc returns the file path of the script we are trying to inject */
-  function getInjectionSrc(file) {
-    return chrome.runtime.getURL(`scripts/${file}`);
+    // Define a new prototype for innerHTML that proxies the call and then calls
+    // the original innerHTML.
+    Object.defineProperty(Element.prototype, "innerHTML", {
+      set: function(value) {
+        // Send a message to the extension to check the arguments of any
+        // call to innerHTML have user-controlled input.
+        window.postMessage(
+          {
+            "message-type": "job",
+            type: "innerHTML",
+            msg: value,
+            location: document.location.href
+          },
+          "*"
+        );
+
+        //Call the original setter
+        return originalSet.call(this, value);
+      }
+    });
   }
 
-  /*injectScript injects the script into the page and then removes it. */
-  function injectScript(src) {
+  // r is injected to
+  function r() {
+    window.postMessage(
+      {
+        "message-type": "reproduction",
+        id: window.tracy.tabID
+      },
+      "*"
+    );
+  }
+
+  // A list of scripts we want to inject into the page rather than have them as a
+  // content script.
+  const injectionScripts = [r, proxyInnerHTML];
+  // Inject the scripts.
+  injectionScripts.map(injectScript);
+
+  // injectScript injects the script into the page and then removes it.
+  function injectScript(func) {
     const hookInjector = document.createElement("script");
     hookInjector.type = "text/javascript";
-    hookInjector.src = src;
+    hookInjector.innerHTML = func.toString();
     document.documentElement.appendChild(hookInjector);
-    hookInjector.parentNode.removeChild(hookInjector); // TODO: do we need to remove it?
+    hookInjector.parentNode.removeChild(hookInjector);
   }
 })();

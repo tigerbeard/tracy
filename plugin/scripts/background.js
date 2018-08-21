@@ -1,65 +1,54 @@
-// rawRequestToFetch takes an HTTP request string and turns
-// it into a Request object that can be used with a fetch
-// request that makes the same request.
-function rawRequestToRequest(rawRequest, protocol, host) {
-  if (protocol.toLowerCase() !== "http" && protocol.toLowerCase() !== "https") {
-    console.error("protocol must be either HTTP or HTTPS");
-    return false;
-  }
-  const bs = rawRequest.split("\n\n");
-  const body = bs.length === 2 ? "" : bs[1];
-  const ns = rawRequest.split("\n");
-  if (ns.length <= 0) {
-    console.error("The raw request didn't have any newlines.");
-    return false;
-  }
-  const ms = ns[0].split(" ");
-  if (ms.length !== 3) {
-    console.error(
-      "The raw request didn't have a properly formatted first line."
-    );
-    return false;
-  }
-  const method = ms[0];
-  const path = ms[1];
-  ns.splice(0, 1);
-  // If we have a body in the request, it has already been collect.
-  // Remove it from the headers.
-  if (body) {
-    ns.splice(ns.length - 1, 1);
-  }
-  let headers = ns.reduce((accum, t) => {
-    const a = t.split(":");
-    if (a.length < 2) {
-      return accum;
-    }
-    if (a.length > 2) {
-      const s = a.splice(0, 1);
-      accum[s[0].trim()] = "".concat.apply("", a).trim();
-      return accum;
-    }
-    accum[a[0].trim()] = a[1].trim();
-    return accum;
-  }, {});
-
-  // Headers we don't care about
-  delete headers["Content-Length"];
-
-  const opts = { method: method, headers: headers, body: body };
-  return new Request(`${protocol}://${host}${path}`, opts);
-}
-
 // reproduceFinding takes a tracer and event and attempts to reproduce
 // the finding with a valid XSS payload. If done successfully, this
 // background page should be able to inject a script to read a predictable
 // value from the page.
-function reproduceFinding(tracer, event) {
-  const req = rawRequestToRequest(
-    tracer.RawRequest,
-    tracer.Protocol,
-    tracer.Host
-  );
+function reproduceFinding(tracer, event, context, repro) {
+  chrome.tabs.create({ url: event.EventURL }, tab => {
+    // Executing script here rather than using a content script
+    // so that we don't need to load a content script into every
+    // page.
+    chrome.tabs.executeScript(
+      tab.id,
+      {
+        code: `
+const hookInjector = document.createElement("script");
+hookInjector.type = "text/javascript";
+hookInjector.innerHTML = "if (!window.tracy) {window.tracy = {};} window.tracy.tabID = ${
+          tab.id
+        };";
+document.documentElement.appendChild(hookInjector);
+hookInjector.parentNode.removeChild(hookInjector);`,
+        // TODO: does document_idle make more sense?
+        runAt: "document_start"
+      },
+      () => {
+        memoTabs.add(tab.id, {
+          tracer: tracer,
+          event: event,
+          context: context,
+          repro: repro
+        });
+
+        // Wait for 30 seconds for the tab to hit callback.
+        // If we don't hear from them, it probably didn't work,
+        // so close the tab.
+        //setTimeout(() => removeTab(tab.id), 1000 * 60 * 0.5);
+      }
+    );
+  });
 }
+
+// tabs keeps a running tally of the currently tested tabs
+// that are being opened and closed for reproduction steps.
+function tabs() {
+  let tabs = {};
+  return {
+    get: () => tabs,
+    add: (t, args) => (tabs[`${t}`] = args),
+    del: t => delete tabs[`${t}`]
+  };
+}
+const memoTabs = tabs();
 
 // bulkAddEvents makes a POST request to the bulk events to the API with
 // a set of events from the DOM.
@@ -151,27 +140,46 @@ function messageRouter(message, sender, sendResponse) {
       case "refresh":
         refreshConfig(false);
         break;
+      case "reproduction":
+        updateReproduction(message);
+        break;
     }
   }
+}
+
+// updateReproduction validates that a particular tab
+// executed a Javascript payload correctly.
+function updateReproduction(message) {
+  const tab = memoTabs.get()[message.id];
+  const reproTest = { Successful: true };
+
+  fetch(
+    `http://${restServer}/tracers/${tab.tracer.ID}/events/${
+      tab.context.ID
+    }/reproductions/${tab.repro.ID}`,
+    {
+      method: "PUT",
+      body: JSON.stringify(reproTest),
+      headers: { Hoot: "!" }
+    }
+  ).catch(err => console.error(err));
+
+  removeTab(message.id);
+}
+
+// removeTab removes the tab from the browser and also removes the
+// tab from list of currently available tabs that are cached.
+function removeTab(id) {
+  // Close the tab when we are done with it.
+  chrome.tabs.remove(id);
+  // Remove the tab from the list of collected tabs.
+  memoTabs.del(id);
 }
 
 // refresheConfig makes an API request for the latest config from `/config`,
 // pulls configuration from the extension settings page and gets a current
 // list of tracers. refreshConfig is usually called on page load.
-//a = true;
 async function refreshConfig(wsConnect) {
-  /*if (a) {
-    a = false;
-    for (var j = 0; j < 20; j++) {
-      chrome.tabs.create({ url: `https://example.com?q=${j}` }, tab =>
-        setTimeout(() => {
-          console.log("hello?");
-          chrome.tabs.remove(tab.id);
-        }, 1000)
-      );
-    }
-  }*/
-
   const settings = await new Promise(resolve =>
     chrome.storage.local.get({ restHost: "localhost", restPort: 8081 }, res =>
       resolve(res)
@@ -237,6 +245,14 @@ function websocketConnect() {
             tracerPayloads.push(t.TracerPayload);
           }
         });
+        break;
+      case "Reproduction":
+        reproduceFinding(
+          req.Reproduction.Tracer,
+          req.Reproduction.TracerEvent,
+          req.Reproduction.DOMContext,
+          req.Reproduction.ReproductionTest
+        );
         break;
       default:
         break;

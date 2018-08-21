@@ -326,7 +326,7 @@ func handleConnection(client net.Conn) {
 		}
 
 		if err != nil {
-			log.Error.Println(err)
+			log.Error.Print(err)
 			return
 		}
 	} else {
@@ -352,7 +352,7 @@ func handleConnection(client net.Conn) {
 		}
 
 		if err != nil {
-			log.Error.Println(err)
+			log.Error.Print(err)
 			return
 		}
 	}

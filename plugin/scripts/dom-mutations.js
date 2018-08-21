@@ -5,7 +5,7 @@ chrome.runtime.sendMessage({
 // This observer will be used to observe changes in the DOM. It will batches DOM changes and send them to the API
 // server if it finds a tracer string.
 const observer = new MutationObserver(mutations => {
-  const parentNode = null;
+  let parentNode = null;
 
   mutations.forEach(mutation => {
     if (mutation.addedNodes.length > 0) {
