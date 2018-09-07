@@ -11,7 +11,7 @@ import (
 	"github.com/nccgroup/tracy/api/types"
 )
 
-// StartReproduction handles the HTTP API request for starting a
+// StartReproductions handles the HTTP API request for starting a
 // reproduction for a particular tracer and event.
 func StartReproductions(w http.ResponseWriter, r *http.Request) {
 	tracerID, contextID, _, err := parsePathVariables(r)

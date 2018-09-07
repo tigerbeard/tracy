@@ -13,7 +13,7 @@ import (
 	"github.com/nccgroup/tracy/log"
 )
 
-// StartReproduction makes the raw HTTP request that initatied the
+// StartReproductions makes the raw HTTP request that initatied the
 // tracer, then sends off the event to the extension via websocket
 // to be completed by the extension.
 func StartReproductions(tracerID, contextID uint) {
@@ -49,36 +49,38 @@ func StartReproductions(tracerID, contextID uint) {
 	// payloads to make sure our reproduction executes properly based
 	// on where in the DOM we found the input.
 	exploits := exploitStateMachine(context)
-	log.Trace.Printf("exploits: %+v", exploits)
-	for _, exploit := range exploits {
-		go createReproductionTest(req, tracer, context, event, exploit)
+	rts := make([]types.ReproductionTest, len(exploits))
+	for i, exploit := range exploits {
+		rt := types.ReproductionTest{
+			TracerEventID: event.ID,
+			Exploit:       exploit,
+			Successful:    false, // all tests default to false
+		}
+		go createReproductionTest(req, tracer, context, rt)
+		rts[i] = rt
 	}
+
+	UpdateSubscribers(types.Reproduction{
+		Tracer:            tracer,
+		TracerEvent:       event,
+		DOMContext:        context,
+		ReproductionTests: rts,
+	})
 }
 
 // createReproductionTest creates a row in the events
 // reproduction test table, replays the request that generated
 // the event with the exploit, and notifies the extensions
 // to see what happened using a tab.
-func createReproductionTest(req types.Request, tracer types.Tracer, context types.DOMContext, event types.TracerEvent, exploit string) {
-	rt := types.ReproductionTest{
-		TracerEventID: event.ID,
-		Exploit:       exploit,
-		Successful:    false, // all tests default to false
-	}
-	if err := store.DB.Create(&rt).Error; err != nil {
+func createReproductionTest(req types.Request, tracer types.Tracer, context types.DOMContext, reproTest types.ReproductionTest) {
+	if err := store.DB.Create(&reproTest).Error; err != nil {
 		log.Error.Print(err)
 		return
 	}
-	if err := replayInjectionPoint(req, tracer.TracerPayload, exploit); err != nil {
+	if err := replayInjectionPoint(req, tracer.TracerPayload, reproTest.Exploit); err != nil {
 		log.Error.Print(err)
 		return
 	}
-	UpdateSubscribers(types.Reproduction{
-		Tracer:           tracer,
-		TracerEvent:      event,
-		DOMContext:       context,
-		ReproductionTest: rt,
-	})
 }
 
 // UpdateReproduction changes the status of a tracer event to
@@ -117,7 +119,9 @@ func exploitStateMachine(c types.DOMContext) []string {
 			`<img src='' onerror="r()"/>`,
 		}
 	case types.AttrVal:
-		// TODO: Can't automatically trigger this
+		// TODO: Can't automatically trigger this. Maybe we can do
+		// something in the future about firing a click event or
+		// something.
 		return []string{
 			"javascript:r()",
 		}
@@ -144,7 +148,6 @@ func replayInjectionPoint(req types.Request, tracerPayload, exploit string) erro
 	// dial require a port. If they used regular 80 and 443, they
 	// won't be included in the URL
 	hosts := strings.Split(u.Host, ":")
-	log.Trace.Printf("[RR]:%+v", rr)
 	host := u.Host
 	var conn net.Conn
 	if u.Scheme != "https" {

@@ -15,8 +15,8 @@ type ReproductionTest struct {
 // Reproduction is the struct that holds all the information
 // a tab needs to in order to successfully reproduce a finding.
 type Reproduction struct {
-	Tracer           Tracer           `json:Tracer`
-	TracerEvent      TracerEvent      `json:TracerEvent`
-	DOMContext       DOMContext       `json:DOMContext`
-	ReproductionTest ReproductionTest `json:ReproductionTest`
+	Tracer            Tracer             `json:Tracer`
+	TracerEvent       TracerEvent        `json:TracerEvent`
+	DOMContext        DOMContext         `json:DOMContext`
+	ReproductionTests []ReproductionTest `json:ReproductionTests`
 }

@@ -98,6 +98,7 @@ func updateRouter(update interface{}) {
 				continue
 			}
 		case types.Reproduction:
+
 			if err := sub.Sock.WriteJSON(types.ReproductionWebSocket{u}); err != nil {
 				log.Error.Print(err)
 				continue

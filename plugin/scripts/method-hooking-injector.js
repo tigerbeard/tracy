@@ -38,8 +38,7 @@
   function r() {
     window.postMessage(
       {
-        "message-type": "reproduction",
-        id: window.tracy.tabID
+        "message-type": "reproduction"
       },
       "*"
     );

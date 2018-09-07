@@ -24,7 +24,7 @@ type NotificationWebSocket struct {
 	Notification Notification `json:"Notification"`
 }
 
-// ReproductionWebsocket is a struct that is used to pass new
+// ReproductionWebSocket is a struct that is used to pass new
 // reproduction data to the extension from the UI.x
 type ReproductionWebSocket struct {
 	Reproduction Reproduction `json:Reproduction`

@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net"
@@ -97,7 +99,7 @@ func identifyRequestsforGeneratedTracer(dump, method string) {
 
 // identifyTracersInResponse looks for all the registered tracers in an HTTP
 // response and makes an event for each of them.
-func identifyTracersInResponse(b []byte, host string, request *http.Request, resp *http.Response) {
+func identifyTracersInResponse(b []byte, host, url string, gziped bool) {
 	// Check if the host is the tracer API server. We don't want to trigger
 	// anything if we accidentally proxied a tracer server API call because
 	// it will cause a recursion.
@@ -106,7 +108,7 @@ func identifyTracersInResponse(b []byte, host string, request *http.Request, res
 	}
 
 	// Check that the server actually sent compressed data
-	if resp.Header.Get("Content-Encoding") == "gzip" {
+	if gziped {
 		reader, err := gzip.NewReader(bytes.NewReader(b))
 		if err == io.EOF {
 			return
@@ -142,7 +144,6 @@ func identifyTracersInResponse(b []byte, host string, request *http.Request, res
 		return
 	}
 
-	url := request.Host + request.RequestURI
 	tracers := findTracersInResponseBody(string(b), url, requests)
 
 	if len(tracers) == 0 {
@@ -172,7 +173,7 @@ func identifyTracersInResponse(b []byte, host string, request *http.Request, res
 			}
 			_, err = common.AddEvent(tracer, event)
 			if err != nil {
-				if !strings.Contains("UNIQUE", err.Error()) {
+				if !strings.Contains(err.Error(), "UNIQUE") {
 					log.Error.Print(err)
 					return
 				}
@@ -182,10 +183,10 @@ func identifyTracersInResponse(b []byte, host string, request *http.Request, res
 }
 
 // handleConnect handles the upgrade requests for 'CONNECT' HTTP requests.
-func handleConnect(client net.Conn, request *http.Request, host string) (net.Conn, *http.Request, bool, error) {
+func handleConnect(client net.Conn, request *http.Request) (net.Conn, *http.Request, bool, error) {
 	// Try to upgrade the 'CONNECT' request to a TLS connection with
 	// the configured certificate.
-	c, isHTTPS, err := upgradeConnectionTLS(client, host)
+	c, isHTTPS, err := upgradeConnectionTLS(client, request.URL.Host)
 	if err != nil {
 		log.Warning.Println(err)
 		return nil, nil, false, err
@@ -195,20 +196,13 @@ func handleConnect(client net.Conn, request *http.Request, host string) (net.Con
 	// structure over TLS.
 	request, err = http.ReadRequest(bufio.NewReader(c))
 
-	if err != nil {
-		log.Warning.Println(err)
+	if err == io.EOF {
 		return nil, nil, false, err
 	}
 
-	// Read the request structure as a slice of bytes.
-	if log.Verbose {
-		dump, err := httputil.DumpRequest(request, true)
-		if err != nil {
-			log.Warning.Println(err)
-			return nil, nil, false, err
-		}
-
-		log.Trace.Print(string(dump))
+	if err != nil {
+		log.Warning.Println(err)
+		return nil, nil, false, err
 	}
 
 	return c, request, isHTTPS, nil
@@ -220,27 +214,22 @@ func handleConnect(client net.Conn, request *http.Request, host string) (net.Con
 func handleConnection(client net.Conn) {
 	// Read a request structure from the TCP connection.
 	request, err := http.ReadRequest(bufio.NewReader(client))
+
 	if err == io.EOF {
 		return
 	}
+
 	if err != nil {
 		log.Error.Print(err)
 		return
 	}
 
-	host := request.URL.Host
 	isHTTPS := false
-
-	// Dump the request structure as a slice of bytes.
-	if log.Verbose {
-		dump, _ := httputil.DumpRequest(request, true)
-		log.Trace.Println(string(dump))
-	}
-
+	port := "80"
 	// If the request method is 'CONNECT', it's either a TLS connection or a
 	// websocket.
 	if request.Method == http.MethodConnect {
-		client, request, isHTTPS, err = handleConnect(client, request, host)
+		client, request, isHTTPS, err = handleConnect(client, request)
 		if err == io.EOF {
 			return
 		}
@@ -248,6 +237,15 @@ func handleConnection(client net.Conn) {
 			log.Error.Print(err)
 			return
 		}
+		if isHTTPS {
+			port = "443"
+		}
+	}
+
+	// Dump the request structure as a slice of bytes.
+	if log.Verbose {
+		dump, _ := httputil.DumpRequest(request, true)
+		log.Trace.Println(string(dump))
 	}
 
 	// Moving the client close here for the same reason as request, above.
@@ -255,13 +253,23 @@ func handleConnection(client net.Conn) {
 		defer client.Close()
 	}
 
+	ports := strings.Split(request.Host, ":")
+	var host string
+	if len(ports) == 2 {
+		host = request.Host
+	} else {
+		host = request.Host + ":" + port
+	}
+
+	path := request.RequestURI
 	// Requests with the custom HTTP header "X-TRACY" are opting out of the
 	// swapping of tracy payloads. Also, we keep a whitelist of hosts that
 	// shouldn't swap out tracy payloads so that recursion issues don't
 	// happen. For example, tracy payloads will occur all over the UI and
 	// we don't want those to be swapped.
-	if !configure.ServerInWhitelist(host) && request.Header.Get("X-TRACY") == "" {
-		// Look for tracers that might have been generated out of band
+	xTracyHeader := request.Header.Get("X-TRACY")
+	if !configure.ServerInWhitelist(host) && xTracyHeader == "" {
+		// Look for tracers that might have been generated out-of-band
 		// using the API. Do this by checking if there exists a tracer,
 		// but we have no record of which request it came from.
 		dump, err := httputil.DumpRequest(request, true)
@@ -309,7 +317,80 @@ func handleConnection(client net.Conn) {
 		}
 	}
 
-	var server net.Conn
+	var b []byte
+	if strings.HasPrefix(xTracyHeader, "GET-CACHE") {
+		log.Error.Print("GET-CACHE found")
+		e := strings.Split(xTracyHeader, ";")
+		if len(e) != 2 {
+			log.Error.Print(`incorrect usage of GET-CACHE header. expected "GET-CACHE;<BASE64(EXPLOIT:TRACERSTRING)>"`)
+			return
+		}
+		// So that we don't have to keep state in the proxy, encode the
+		// tracer string to replace and the exploit in the header.
+		et, err := base64.StdEncoding.DecodeString(e[1])
+		if err != nil {
+			log.Error.Print(err)
+			return
+		}
+		ent := strings.Split(string(et), ":")
+		if len(ent) != 2 {
+			log.Error.Print(`incorrect usage of GET-CACHE header. expected "GET-CACHE;<BASE64(EXPLOIT:TRACERSTRING)>"`)
+			return
+		}
+		b, err = getCachedResponse(host, request.Method)
+		if err != nil {
+			// If the cache didn't have an entry for this request and host
+			// we should fall back to making the actual HTTP request.
+			// TODO: is this the expected behaviour? It might mess things ups.
+			log.Error.Print("CACHE MISS")
+			return
+			//b, err = connectToTarget(isHTTPS, host, request, client)
+			//if err == io.EOF {
+			//	return
+			//}
+
+			//if err != nil {
+			//	log.Error.Print(err)
+			//		return
+			//}
+		}
+		log.Error.Print("CACHE HIT")
+
+		// If we are using the cache, swap out the tracer string with the
+		// exploit.
+		b = bytes.Replace(b, []byte(ent[1]), []byte(ent[0]), 1)
+		resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(b)), request)
+
+		if resp != nil {
+			defer resp.Body.Close()
+		}
+
+		if err != nil {
+			log.Warning.Println(err)
+			return
+		}
+
+		resp.Write(client)
+	} else {
+		b, err = connectToTarget(isHTTPS, host, path, request, client)
+		if err == io.EOF {
+			return
+		}
+
+		if err != nil {
+			log.Error.Print(err)
+			return
+		}
+	}
+}
+
+// connectToTarget connects to a backend server, sends the
+// proxied request, and reads the response as a slice of bytes.
+func connectToTarget(isHTTPS bool, host, path string, req *http.Request, client net.Conn) ([]byte, error) {
+	var (
+		err    error
+		server net.Conn
+	)
 
 	// Based on the scheme, the API is different to backside of the proxy connection.
 	// TODO: I think we can change the default transport here to timeout a
@@ -326,8 +407,8 @@ func handleConnection(client net.Conn) {
 		}
 
 		if err != nil {
-			log.Error.Print(err)
-			return
+			log.Warning.Print(err)
+			return []byte{}, err
 		}
 	} else {
 		var tserver *tls.Conn
@@ -347,45 +428,120 @@ func handleConnection(client net.Conn) {
 			defer server.Close()
 		}
 
-		if err == io.EOF {
-			return
-		}
-
 		if err != nil {
-			log.Error.Print(err)
-			return
+			log.Warning.Print(err)
+			return []byte{}, err
 		}
 	}
 
+	// If we are prepping the cache, remove any cache headers.
+	prepCache := strings.EqualFold(req.Header.Get("X-TRACY"), "set-cache")
+	if prepCache {
+		req.Header.Del("If-None-Match")
+		req.Header.Del("Etag")
+		req.Header.Del("Cache-Control")
+	}
 	// Write the entire request to the backside connection of the proxy.
-	request.Write(server)
+	req.Write(server)
 
 	resp, err := http.ReadResponse(bufio.NewReader(server), nil)
-
 	if resp != nil {
 		defer resp.Body.Close()
 	}
 
 	if err != nil {
-		log.Error.Println(err)
-		return
+		log.Warning.Println(err)
+		return []byte{}, err
 	}
 
-	var save bytes.Buffer
-	b, err := ioutil.ReadAll(io.TeeReader(resp.Body, &save))
-	if err != nil {
-		log.Error.Println(err)
-		return
+	// If the request has the X-TRACY: SET-CACHE value, make sure
+	// we cache this response.
+	var b []byte
+	if prepCache {
+		b, err = ioutil.ReadAll(resp.Body)
+		if err != nil {
+			log.Warning.Println(err)
+			return []byte{}, err
+		}
+		resp.TransferEncoding = []string{}
+
+		// Check that the server actually sent compressed data.
+		if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+			gr, err := gzip.NewReader(bytes.NewReader(b))
+			if err == io.EOF {
+				return []byte{}, nil
+			}
+			if err != nil {
+				log.Warning.Print(err)
+				return []byte{}, err
+			}
+
+			if gr == nil {
+				return []byte{}, nil
+			}
+
+			defer gr.Close()
+			b, err = ioutil.ReadAll(gr)
+
+			if err != nil {
+				log.Error.Print(err)
+				return []byte{}, err
+			}
+			resp.Header.Del("Content-Encoding")
+			resp.Body = ioutil.NopCloser(bytes.NewBuffer(b))
+		}
+		resp.ContentLength = int64(len(b))
+
+		// Translate chunked encoding responses so that we can easily replace
+		// our payloads with exploits and properly update the content
+		// length
+		/*		for _, enc := range resp.TransferEncoding {
+				if strings.EqualFold(enc, "chunked") {
+					log.Error.Printf("swapping out the transfer encoding: %d\n%s", len(b), string(b))
+					cr := httputil.NewChunkedReader(bytes.NewReader(b))
+
+					b, err = ioutil.ReadAll(cr)
+					if err != nil {
+						log.Warning.Print(err)
+						return []byte{}, err
+					}
+					log.Error.Printf("swapped: %d\n%s", len(b), string(b))
+
+					resp.Header.Del("Transfer-Encoding")
+					resp.ContentLength = int64(len(b))
+					resp.Body = ioutil.NopCloser(bytes.NewBuffer(b))
+					break
+				}
+			}*/
+
+		respb, err := httputil.DumpResponse(resp, true)
+		if err != nil {
+			log.Warning.Print(err)
+			return []byte{}, err
+		}
+
+		setCacheResponse(host+path, req.Method, respb)
+		resp.Write(client)
+	} else {
+
+		var save bytes.Buffer
+		b, err = ioutil.ReadAll(io.TeeReader(resp.Body, &save))
+		if err != nil {
+			log.Warning.Println(err)
+			return []byte{}, err
+		}
+
+		// Search for any known tracers in the response. Since the list of tracers
+		// might get large, perform this operation in a goroutine.
+		// The proxy can finish this connection before this finishes.
+		// We don't need to do this in the cases where we are prepping the cache.
+		gzip := strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip")
+		go identifyTracersInResponse(b, req.URL.Host, req.Host+req.RequestURI, gzip)
+
+		// Write the response back to the client.
+		resp.Body = ioutil.NopCloser(&save)
+		resp.Write(client)
 	}
-
-	// Search for any known tracers in the response. Since the list of tracers
-	// might get large, perform this operation in a goroutine.
-	// The proxy can finish this connection before this finishes.
-	go identifyTracersInResponse(b, host, request, resp)
-
-	// Right the response back to the client.
-	resp.Body = ioutil.NopCloser(&save)
-	resp.Write(client)
 
 	// If the backside of the proxy tries to change the protocol, forward
 	// this change and simply copy the bytes between the two connections
@@ -398,6 +554,43 @@ func handleConnection(client net.Conn) {
 		// are finished.
 		bridge(server, client)
 	}
+
+	return b, nil
+}
+
+// cacheResponse adds a cache entry in the proxy cache for the HTTP response
+// corresponding to the method and URL. This happens only if the request
+// has been marked with the HTTP request header SET-CACHE.
+func setCacheResponse(url, method string, resp []byte) {
+	log.Error.Printf("SET-CACHE FOUND. setting cache for the following: %s, %s, %s", url, method, string(resp))
+	r := &requestCacheSet{
+		url:    url,
+		method: method,
+		resp:   resp,
+	}
+
+	requestCacheSetChan <- r
+}
+
+// getCachedResponse gets a cache entry from the proxy cache based on a
+// request method and URL. This happens only if the request has been marked
+// with the HTTP request header FROM-CACHE.
+func getCachedResponse(url, method string) ([]byte, error) {
+	r := &requestCacheGet{
+		url:    url,
+		method: method,
+		ok:     make(chan bool),
+		resp:   make(chan []byte),
+	}
+	requestCacheGetChan <- r
+	if ok := <-r.ok; !ok {
+		err := fmt.Errorf("The request didn't have a cache entry")
+		log.Warning.Print(err)
+		return []byte{}, err
+	}
+
+	return <-r.resp, nil
+
 }
 
 // bridge reads bytes from one connection and writes them to another connection.

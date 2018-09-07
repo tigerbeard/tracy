@@ -2,40 +2,77 @@
 // the finding with a valid XSS payload. If done successfully, this
 // background page should be able to inject a script to read a predictable
 // value from the page.
-function reproduceFinding(tracer, event, context, repro) {
-  chrome.tabs.create({ url: event.EventURL }, tab => {
-    // Executing script here rather than using a content script
-    // so that we don't need to load a content script into every
-    // page.
-    chrome.tabs.executeScript(
+function reproduceFinding(tracer, event, context, repros) {
+  // Prep the cache by making a request through the proxy with the
+  // SET-CACHE header. Tracy will keep these responses in memory for
+  // the rest of our reproduction steps.
+  chrome.tabs.create({}, tab => {
+    const callback = details => {
+      return {
+        requestHeaders: details.requestHeaders.concat({
+          name: "X-TRACY",
+          value: "SET-CACHE"
+        })
+      };
+    };
+    // Requests that come from this tab ID should be proxied
+    // and have the special header `SET-CACHE` added to it.
+    chrome.webRequest.onBeforeSendHeaders.addListener(
+      callback,
+      { urls: ["<all_urls>"], tabId: tab.id },
+      ["blocking", "requestHeaders"]
+    );
+
+    // Execute a noop script after the page has loaded,
+    // so that we can get a callback to remove the tab
+    // that was used to prep the cache as soon as it was done.
+    chrome.tabs.update(
       tab.id,
       {
-        code: `
-const hookInjector = document.createElement("script");
-hookInjector.type = "text/javascript";
-hookInjector.innerHTML = "if (!window.tracy) {window.tracy = {};} window.tracy.tabID = ${
-          tab.id
-        };";
-document.documentElement.appendChild(hookInjector);
-hookInjector.parentNode.removeChild(hookInjector);`,
-        // TODO: does document_idle make more sense?
-        runAt: "document_start"
+        url: event.EventURL
       },
-      () => {
-        memoTabs.add(tab.id, {
-          tracer: tracer,
-          event: event,
-          context: context,
-          repro: repro
-        });
+      () => setTimeout(() => chrome.tabs.remove(tab.id), 10 * 1000)
+    );
+  });
 
+  // For each of the reproduction steps, spin up a tab to
+  // test the different exploits.
+  /*repros.map(repro => {
+    // After the cache has been prepped, send the exploits.
+    chrome.tabs.create({ url: event.EventURL }, tab => {
+      const callback = details => {
+        return {
+          requestHeaders: details.requestHeaders.concat({
+            name: "X-TRACY",
+            value:
+              "GET-CACHE;" + btoa(repro.Exploit + ":" + tracer.TracerPayload)
+          })
+        };
+      };
+
+      // Requests that come from this tab ID should be proxied
+      // and have the special header `GET-CACHE` added to it,
+      // along with the data the extension wants to have swapped out
+      // on the server.
+      chrome.webRequest.onBeforeSendHeaders.addListener(
+        callback,
+        { urls: ["<all_urls>"], tabId: tab.id },
+        ["blocking", "requestHeaders"]
+      );
+
+      memoTabs.add(tab.id, {
+        tracer: tracer,
+        event: event,
+        context: context,
+        repro: repro,
+        callback: callback,
         // Wait for 30 seconds for the tab to hit callback.
         // If we don't hear from them, it probably didn't work,
         // so close the tab.
-        //setTimeout(() => removeTab(tab.id), 1000 * 60 * 0.5);
-      }
-    );
-  });
+        timeout: setTimeout(() => removeTab(tab.id), 1000 * 60 * 0.5)
+      });
+    });
+  });*/
 }
 
 // tabs keeps a running tally of the currently tested tabs
@@ -113,7 +150,7 @@ function requestHandler(domEvents) {
           RawEvent: {
             Data: domEvent.msg
           },
-          EventURL: encodeURI(domEvent.location),
+          EventURL: domEvent.location,
           EventType: domEvent.type
         },
         TracerPayloads: tracersPerDomEvent
@@ -141,7 +178,7 @@ function messageRouter(message, sender, sendResponse) {
         refreshConfig(false);
         break;
       case "reproduction":
-        updateReproduction(message);
+        updateReproduction(message, sender);
         break;
     }
   }
@@ -149,8 +186,8 @@ function messageRouter(message, sender, sendResponse) {
 
 // updateReproduction validates that a particular tab
 // executed a Javascript payload correctly.
-function updateReproduction(message) {
-  const tab = memoTabs.get()[message.id];
+function updateReproduction(message, sender) {
+  const tab = memoTabs.get()[sender.tab.id];
   const reproTest = { Successful: true };
 
   fetch(
@@ -164,12 +201,19 @@ function updateReproduction(message) {
     }
   ).catch(err => console.error(err));
 
-  removeTab(message.id);
+  removeTab(sender.tab.id);
 }
 
 // removeTab removes the tab from the browser and also removes the
 // tab from list of currently available tabs that are cached.
 function removeTab(id) {
+  // Remove the listener for that tab.
+  //  chrome.webRequest.onBeforeSendHeaders.removeListener(
+  //   memoTabs.get()[id].callback
+  // );
+
+  // Remove the timeout
+  clearTimeout(memoTabs.get()[`${id}`].timeout);
   // Close the tab when we are done with it.
   chrome.tabs.remove(id);
   // Remove the tab from the list of collected tabs.
@@ -251,7 +295,7 @@ function websocketConnect() {
           req.Reproduction.Tracer,
           req.Reproduction.TracerEvent,
           req.Reproduction.DOMContext,
-          req.Reproduction.ReproductionTest
+          req.Reproduction.ReproductionTests
         );
         break;
       default:
