@@ -1,13 +1,13 @@
-// reproduceFinding takes a tracer and event and attempts to reproduce
-// the finding with a valid XSS payload. If done successfully, this
-// background page should be able to inject a script to read a predictable
-// value from the page.
-function reproduceFinding(tracer, event, context, repros) {
+// prepCache uses a tab to recreate the state of a page with a
+// special header attached so that tracy knows on the backend to
+// cache the responses in-memory so that we can run reproductions
+// without changing the state of the application.
+function prepCache(event) {
   // Prep the cache by making a request through the proxy with the
   // SET-CACHE header. Tracy will keep these responses in memory for
   // the rest of our reproduction steps.
-  chrome.tabs.create({}, tab => {
-    const callback = details => {
+  chrome.tabs.create({ active: false }, tab => {
+    const beforeHandler = details => {
       return {
         requestHeaders: details.requestHeaders.concat({
           name: "X-TRACY",
@@ -15,31 +15,45 @@ function reproduceFinding(tracer, event, context, repros) {
         })
       };
     };
+
     // Requests that come from this tab ID should be proxied
     // and have the special header `SET-CACHE` added to it.
     chrome.webRequest.onBeforeSendHeaders.addListener(
-      callback,
+      beforeHandler,
       { urls: ["<all_urls>"], tabId: tab.id },
       ["blocking", "requestHeaders"]
     );
 
-    // Execute a noop script after the page has loaded,
-    // so that we can get a callback to remove the tab
-    // that was used to prep the cache as soon as it was done.
-    chrome.tabs.update(
-      tab.id,
-      {
-        url: event.EventURL
-      },
-      () => setTimeout(() => chrome.tabs.remove(tab.id), 10 * 1000)
-    );
-  });
+    // After the page is finished loading, close the tab.
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+      if (tabId === tab.id && changeInfo.status === "complete") {
+        removeTab(tab.id);
+      }
+    });
 
+    // Store the tab so that we can prevent the MutationObserver from triggering
+    // during the reproduction steps flows.
+    memoTabs.add(tab.id, {
+      event: event
+    });
+
+    // Change the URL of the blank page after all the callbacks are properly
+    // set up so that we can capture all the requests.
+    chrome.tabs.update(tab.id, { url: event.EventURL });
+  });
+}
+
+// reproduceFinding takes a tracer and event and attempts to reproduce
+// the finding with a valid XSS payload. If done successfully, this
+// background page should be able to inject a script to read a predictable
+// value from the page. Reproduction are completed using the
+// in-memory cache of responses from this event.
+function reproduceFinding(tracer, event, context, repros) {
   // For each of the reproduction steps, spin up a tab to
   // test the different exploits.
-  /*repros.map(repro => {
+  repros.map(repro => {
     // After the cache has been prepped, send the exploits.
-    chrome.tabs.create({ url: event.EventURL }, tab => {
+    chrome.tabs.create({ active: false, url: event.EventURL }, tab => {
       const callback = details => {
         return {
           requestHeaders: details.requestHeaders.concat({
@@ -72,7 +86,7 @@ function reproduceFinding(tracer, event, context, repros) {
         timeout: setTimeout(() => removeTab(tab.id), 1000 * 60 * 0.5)
       });
     });
-  });*/
+  });
 }
 
 // tabs keeps a running tally of the currently tested tabs
@@ -188,6 +202,9 @@ function messageRouter(message, sender, sendResponse) {
 // executed a Javascript payload correctly.
 function updateReproduction(message, sender) {
   const tab = memoTabs.get()[sender.tab.id];
+  if (!tab) {
+    return;
+  }
   const reproTest = { Successful: true };
 
   fetch(
@@ -207,11 +224,6 @@ function updateReproduction(message, sender) {
 // removeTab removes the tab from the browser and also removes the
 // tab from list of currently available tabs that are cached.
 function removeTab(id) {
-  // Remove the listener for that tab.
-  //  chrome.webRequest.onBeforeSendHeaders.removeListener(
-  //   memoTabs.get()[id].callback
-  // );
-
   // Remove the timeout
   clearTimeout(memoTabs.get()[`${id}`].timeout);
   // Close the tab when we are done with it.
@@ -280,7 +292,7 @@ async function refreshConfig(wsConnect) {
 // Connect to the websocket endpoint so we don't have to poll for new tracer strings.
 function websocketConnect() {
   const nws = new WebSocket(`ws://${restServer}/ws`);
-  nws.addEventListener("message", function(event) {
+  nws.addEventListener("message", event => {
     let req = JSON.parse(event.data);
     switch (Object.keys(req)[0]) {
       case "Request":
@@ -298,15 +310,23 @@ function websocketConnect() {
           req.Reproduction.ReproductionTests
         );
         break;
+      case "Notification":
+        const n = req.Notification;
+        n.Event.DOMContexts.map(c => {
+          if (c.Severity >= 2) {
+            prepCache(n.Event);
+            return true;
+          }
+          return false;
+        });
+        break;
       default:
         break;
     }
   });
 
-  nws.addEventListener("close", function() {
-    // Attempt to reconnect when the socket closes.
-    setTimeout(websocketConnect, 1500);
-  });
+  // Attempt to reconnect when the socket closes.
+  nws.addEventListener("close", () => setTimeout(websocketConnect, 1500));
 }
 
 // configQuery returns the appropriate configuration information
@@ -329,6 +349,11 @@ function configQuery(message, sender, sendResponse) {
 
 // Add a job to the job queue.
 function addJobToQueue(message, sender, sendResponse) {
+  // Don't add a job if it's one of the tabs that we have collected
+  // in our reproduction steps flow.
+  if (memoTabs.get()[sender.tab.id]) {
+    return;
+  }
   // If it is the first job added, set a timer to process the jobs.
   if (jobs.length === 0) {
     setTimeout(processDomEvents, 2000);

@@ -416,9 +416,9 @@ class App extends Component {
     }
   };
 
-  /*handleNewTracer handles websocket messages that report new tracers. */
+  // handleNewTracer handles websocket messages that report new tracers.
   handleNewTracer = nTracer => {
-    let data = JSON.parse(nTracer.data)["Tracer"];
+    const data = JSON.parse(nTracer.data)["Tracer"];
     this.setState((prevState, props) => {
       let match = [].concat
         .apply([], prevState.tracers.map(n => n.Tracers))
@@ -441,9 +441,9 @@ class App extends Component {
     });
   };
 
-  /*handleNewRequest handles websocket messages that report new requests. */
+  // handleNewRequest handles websocket messages that report new requests.
   handleNewRequest = nRequest => {
-    let data = JSON.parse(nRequest.data)["Request"];
+    const data = JSON.parse(nRequest.data)["Request"];
     this.setState((prevState, props) => {
       let match = prevState.tracers.filter(n => n.ID === data.ID);
       if (match.length === 1) {
@@ -452,11 +452,11 @@ class App extends Component {
           if (data[n] !== match[n]) {
             match[n] = data[n];
 
-            //If the key was the RawRequest, we need to update the currently selected tracer
-            //with this value as well.
+            // If the key was the RawRequest, we need to update the currently
+            // selected tracer with this value as well.
             if (n === "RawRequest") {
-              //If the matched request has a tracer that is currently selected...
-              let selected = match.Tracers.filter(
+              // If the matched request has a tracer that is currently selected...
+              const selected = match.Tracers.filter(
                 m => m.ID === prevState.tracer.ID
               );
               if (selected.length === 1) {
@@ -478,9 +478,10 @@ class App extends Component {
     });
   };
 
-  /*handleNewEvent handles websocket messages that report a new event for the currently selected tracer. */
+  // handleNewEvent handles websocket messages that report a new event for the
+  // currently selected tracer.
   handleNewEvent = nEvent => {
-    let data = JSON.parse(nEvent.data)["TracerEvent"];
+    const data = JSON.parse(nEvent.data)["TracerEvent"];
     this.setState((prevState, props) => {
       let match = prevState.events.filter(n => n.ID === data.ID);
       if (match.length === 1) {
@@ -503,7 +504,7 @@ class App extends Component {
     });
   };
 
-  // newFindingNotification checks the browser supports notifications,
+  // handleNotification checks the browser supports notifications,
   // then either asks permission for notifications, or displays the
   // formatted notification if the user has already granted permission.
   handleNotification = (tracer, context, event) => {
@@ -564,8 +565,8 @@ HTML Parent Tag: ${context.HTMLNodeType}`;
     };
   };
 
-  /* When the app loads, make an HTTP request for the latest set of tracers and 
-   * projects. */
+  // When the app loads, make an HTTP request for the latest set of tracers and
+  // projects.
   componentDidMount = () => {
     this.getProjects();
     const proj = this.getSavedProject();
@@ -577,6 +578,7 @@ HTML Parent Tag: ${context.HTMLNodeType}`;
     }
   };
 
+  // deleteProject issues an API request to delete a project from disk.
   deleteProject = proj => {
     const req = this.newTracyRequest(`/projects?proj=${proj}`, {
       method: "DELETE"
