@@ -37,6 +37,12 @@ function prepCache(event) {
       event: event
     });
 
+    // Clear the browser cache before we prep so that we don't
+    // get in a weird situation where we open a tab and some resources
+    // were cached by the browser, but when we go to reproduce
+    // they aren't in our cache.
+    chrome.browsingData.removeCache({});
+
     // Change the URL of the blank page after all the callbacks are properly
     // set up so that we can capture all the requests.
     chrome.tabs.update(tab.id, { url: event.EventURL });
@@ -53,13 +59,13 @@ function reproduceFinding(tracer, event, context, repros) {
   // test the different exploits.
   repros.map(repro => {
     // After the cache has been prepped, send the exploits.
-    chrome.tabs.create({ active: false, url: event.EventURL }, tab => {
+    chrome.tabs.create({ active: true }, tab => {
       const callback = details => {
         return {
           requestHeaders: details.requestHeaders.concat({
             name: "X-TRACY",
             value:
-              "GET-CACHE;" + btoa(repro.Exploit + ":" + tracer.TracerPayload)
+              "GET-CACHE;" + btoa(repro.Exploit + "--" + tracer.TracerPayload)
           })
         };
       };
@@ -80,11 +86,13 @@ function reproduceFinding(tracer, event, context, repros) {
         context: context,
         repro: repro,
         callback: callback,
-        // Wait for 30 seconds for the tab to hit callback.
+        // Wait for 3 seconds for the tab to hit callback.
         // If we don't hear from them, it probably didn't work,
         // so close the tab.
-        timeout: setTimeout(() => removeTab(tab.id), 1000 * 60 * 0.5)
+        timeout: setTimeout(() => removeTab(tab.id), 1000 * 3)
       });
+
+      chrome.tabs.update(tab.id, { url: event.EventURL });
     });
   });
 }
@@ -180,7 +188,7 @@ function requestHandler(domEvents) {
 
 // Routes messages from the extension to various functions on the background.
 function messageRouter(message, sender, sendResponse) {
-  if (message && message["message-type"]) {
+  if (message["message-type"]) {
     switch (message["message-type"]) {
       case "job":
         addJobToQueue(message, sender, sendResponse);
@@ -191,10 +199,11 @@ function messageRouter(message, sender, sendResponse) {
       case "refresh":
         refreshConfig(false);
         break;
-      case "reproduction":
-        updateReproduction(message, sender);
-        break;
     }
+  } else if (message.r) {
+    // Changed the format of the message so we
+    // wouldn't have such a long XSS payload.
+    updateReproduction(message, sender);
   }
 }
 

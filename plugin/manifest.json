@@ -10,7 +10,8 @@
     "contextMenus",
     "tabs",
     "webRequest",
-    "webRequestBlocking"
+    "webRequestBlocking",
+    "browsingData"
   ],
   "background": {
     "scripts": ["scripts/background.js"],
@@ -47,6 +48,7 @@
   },
   "web_accessible_resources": [
     "scripts/innerhtml.js",
+    "scripts/repro.js",
     "scripts/method-hooking.js",
     "images/tracy_svg.svg"
   ],

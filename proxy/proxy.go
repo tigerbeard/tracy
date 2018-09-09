@@ -319,6 +319,7 @@ func handleConnection(client net.Conn) {
 
 	var b []byte
 	if strings.HasPrefix(xTracyHeader, "GET-CACHE") {
+		log.Error.Println("hello?")
 		e := strings.Split(xTracyHeader, ";")
 		if len(e) != 2 {
 			log.Error.Print(`incorrect usage of GET-CACHE header. expected "GET-CACHE;<BASE64(EXPLOIT:TRACERSTRING)>"`)
@@ -331,7 +332,7 @@ func handleConnection(client net.Conn) {
 			log.Error.Print(err)
 			return
 		}
-		ent := strings.Split(string(et), ":")
+		ent := strings.Split(string(et), "--")
 		if len(ent) != 2 {
 			log.Error.Print(`incorrect usage of GET-CACHE header. expected "GET-CACHE;<BASE64(EXPLOIT:TRACERSTRING)>"`)
 			return
@@ -548,8 +549,9 @@ func prepCache(respbc []byte, host, path, method string) {
 	// chunking and compression.
 	resp.Body = ioutil.NopCloser(bytes.NewBuffer(b))
 	resp.ContentLength = int64(len(b))
-
+	resp.Header.Del("Content-Encoding")
 	respb, err := httputil.DumpResponse(resp, true)
+
 	if err != nil {
 		log.Error.Print(err)
 		return
@@ -581,12 +583,16 @@ func getCachedResponse(url, method string) ([]byte, error) {
 		ok:     make(chan bool),
 		resp:   make(chan []byte),
 	}
+	log.Error.Println("about to send cache request")
 	requestCacheGetChan <- r
 	if ok := <-r.ok; !ok {
+		// Collecting the resp so that it is clear for the next cache request.
+		<-r.resp
 		err := fmt.Errorf("The request didn't have a cache entry")
 		log.Warning.Print(err)
 		return []byte{}, err
 	}
+	log.Error.Println("got it back")
 
 	return <-r.resp, nil
 

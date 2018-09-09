@@ -105,33 +105,39 @@ func UpdateReproduction(tracerID, contextID, reproID uint, repro types.Reproduct
 // that will work for the event context when dropped in place for the
 // tracer payload used to create the event.
 func exploitStateMachine(c types.DOMContext) []string {
+	p := payload()
 	switch c.HTMLLocationType {
 	case types.Attr:
 		return []string{
-			` onload="r()" onfocus="r()" autofocus="" `,
+			` onload="` + p + `" onfocus="` + p + `" autofocus="" `,
 		}
 	case types.NodeName:
 		return []string{
-			`img src='' onerror="r()"/`,
+			`img src='' onerror="` + p + `"/`,
 		}
 	case types.Text:
 		return []string{
-			`<img src='' onerror="r()"/>`,
+			`<img src='' onerror="` + p + `"/>`,
 		}
 	case types.AttrVal:
 		// TODO: Can't automatically trigger this. Maybe we can do
 		// something in the future about firing a click event or
 		// something.
 		return []string{
-			"javascript:r()",
+			`javascript:` + p,
 		}
 	case types.Comment:
 		return []string{
-			`--><img src='' onload="r()" />`,
+			`--><img src='' onload="` + p + `" />`,
 		}
 	}
 
 	return []string{}
+}
+
+// payload return the payload the designates XSS was accomplished
+func payload() string {
+	return "window.postMessage({r:1}, `*`)"
 }
 
 // replayInjectionPoint takes a tracer's raw HTTP request
